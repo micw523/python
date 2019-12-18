@@ -19,7 +19,7 @@ from os import path
 import yaml
 
 from kubernetes import client
-
+from kubernetes.base.dynamic import DynamicClient
 
 def create_from_yaml(
         k8s_client,
@@ -95,6 +95,7 @@ def create_from_dict(k8s_client, data, verbose=False, namespace='default',
     # If it is a list type, will need to iterate its items
     api_exceptions = []
 
+    dynamic_client = DynamicClient(k8s_client)
     if "List" in data["kind"]:
         # Could be "List" or "Pod/Service/...List"
         # This is a list type. iterate within its items
@@ -107,15 +108,16 @@ def create_from_dict(k8s_client, data, verbose=False, namespace='default',
                 yml_object["kind"] = kind
             try:
                 create_from_yaml_single_item(
-                    k8s_client, yml_object, verbose, namespace=namespace,
-                    **kwargs)
+                    k8s_client, dynamic_client, yml_object, verbose,
+                    namespace=namespace, **kwargs)
             except client.rest.ApiException as api_exception:
                 api_exceptions.append(api_exception)
     else:
         # This is a single object. Call the single item method
         try:
             create_from_yaml_single_item(
-                k8s_client, data, verbose, namespace=namespace, **kwargs)
+                k8s_client, dynamic_client, data, verbose,
+                namespace=namespace, **kwargs)
         except client.rest.ApiException as api_exception:
             api_exceptions.append(api_exception)
 
@@ -125,7 +127,7 @@ def create_from_dict(k8s_client, data, verbose=False, namespace='default',
 
 
 def create_from_yaml_single_item(
-        k8s_client, yml_object, verbose=False, **kwargs):
+        k8s_client, dynamic_client, yml_object, verbose=False, **kwargs):
     group, _, version = yml_object["apiVersion"].partition("/")
     if version == "":
         version = group
@@ -136,26 +138,18 @@ def create_from_yaml_single_item(
     # convert group name from DNS subdomain format to
     # python class name convention
     group = "".join(word.capitalize() for word in group.split('.'))
-    fcn_to_call = "{0}{1}Api".format(group, version.capitalize())
-    k8s_api = getattr(client, fcn_to_call)(k8s_client)
-    # Replace CamelCased action_type into snake_case
-    kind = yml_object["kind"]
-    kind = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', kind)
-    kind = re.sub('([a-z0-9])([A-Z])', r'\1_\2', kind).lower()
-    # Expect the user to create namespaced objects more often
-    if hasattr(k8s_api, "create_namespaced_{0}".format(kind)):
-        # Decide which namespace we are going to put the object in,
-        # if any
-        if "namespace" in yml_object["metadata"]:
-            namespace = yml_object["metadata"]["namespace"]
-            kwargs['namespace'] = namespace
-        resp = getattr(k8s_api, "create_namespaced_{0}".format(kind))(
-            body=yml_object, **kwargs)
+    api_name = "{0}{1}Api".format(group, version.capitalize())
+    k8s_api = getattr(client, api_name)(k8s_client)
+    if "namespace" in yml_object["metadata"]:
+        namespace = yml_object["metadata"]["namespace"]
     else:
-        kwargs.pop('namespace', None)
-        resp = getattr(k8s_api, "create_{0}".format(kind))(
-            body=yml_object, **kwargs)
+        namespace = kwargs.pop('namespace', None)
+    resp = dynamic_client.create(k8s_api, body=yml_object, namespace=namespace,
+        **kwargs)
     if verbose:
+        kind = yml_object["kind"]
+        kind = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', kind)
+        kind = re.sub('([a-z0-9])([A-Z])', r'\1_\2', kind).lower()
         msg = "{0} created.".format(kind)
         if hasattr(resp, 'status'):
             msg += " status='{0}'".format(str(resp.status))
