@@ -19,7 +19,7 @@ from os import path
 import yaml
 
 from kubernetes import client
-from kubernetes.base.dynamic import DynamicClient
+from kubernetes.dynamic import DynamicClient
 
 def create_from_yaml(
         k8s_client,
